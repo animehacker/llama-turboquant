@@ -490,7 +490,10 @@ static __global__ void dequantize_block_mxfp4(const void * __restrict__ vx, dst_
 // Dequantize to rotated space, then apply inverse WHT32 cooperatively
 template<typename dst_t>
 static __global__ void dequantize_block_tq3_0(const void * __restrict__ vx, dst_t * __restrict__ yy) {
-    const float centroids[4] = { -1.510f, -0.4528f, 0.4528f, 1.510f };
+    const float centroids[8] = {
+        -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+         0.2428f,  0.7434f,  1.3336f,  2.1573f
+    };
     const int8_t signs[32] = {
         +1, -1, +1, +1, -1, -1, +1, -1, +1, +1, -1, +1, -1, +1, -1, -1,
         +1, -1, -1, +1, +1, -1, +1, -1, -1, +1, +1, +1, -1, -1, +1, -1
@@ -503,10 +506,10 @@ static __global__ void dequantize_block_tq3_0(const void * __restrict__ vx, dst_
 
     const float d = __half2float(x[i].gamma);
 
-    // Step 1: Each thread dequantizes its value (in rotated space)
-    const int byte_idx = tid / 4;
-    const int bit_shift = 2 * (tid % 4);
-    const int idx = (x[i].qs[byte_idx] >> bit_shift) & 3;
+    // Step 1: Each thread dequantizes its value (3-bit index from qs + qr)
+    const int low2 = (x[i].qs[tid / 4] >> (2 * (tid % 4))) & 3;
+    const int hi1  = (x[i].qr[tid / 8] >> (tid % 8)) & 1;
+    const int idx  = low2 | (hi1 << 2);
 
     __shared__ float shmem[32];
     shmem[tid] = d * centroids[idx];

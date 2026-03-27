@@ -1237,16 +1237,18 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
 }
 
 // TurboQuant TQ3_0: Fused MMVQ with per-block WHT on query
-// K is stored in WHT-rotated space. We apply WHT to Q inside the kernel.
-// Since WHT is orthogonal: dot(q, k) = dot(WHT(q), WHT(k))
-// Both 1/sqrt(32) normalizations combine to 1/32.
+// TQ3_0 v2: K is stored in WHT-rotated space with 3-bit (8 centroid) quantization.
+// We apply WHT to Q inside the kernel. Since WHT is orthogonal: dot(q, k) = dot(WHT(q), WHT(k))
 #define VDR_TQ3_0_Q8_1_MMVQ 8
 #define VDR_TQ3_0_Q8_1_MMQ  8
 
 static __device__ __forceinline__ float vec_dot_tq3_0_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
-    const float centroids[4] = { -1.510f, -0.4528f, 0.4528f, 1.510f };
+    const float centroids[8] = {
+        -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+         0.2428f,  0.7434f,  1.3336f,  2.1573f
+    };
     const int8_t signs[32] = {
         +1, -1, +1, +1, -1, -1, +1, -1, +1, +1, -1, +1, -1, +1, -1, -1,
         +1, -1, -1, +1, +1, -1, +1, -1, -1, +1, +1, +1, -1, -1, +1, -1
@@ -1279,11 +1281,13 @@ static __device__ __forceinline__ float vec_dot_tq3_0_q8_1(
         }
     }
 
-    // Step 2: Dot product in rotated space
+    // Step 2: Dot product in rotated space (3-bit index: low 2 bits in qs, high 1 bit in qr)
     float sumf = 0.0f;
     #pragma unroll
     for (int j = 0; j < 32; j++) {
-        const int idx = (btq->qs[j / 4] >> (2 * (j % 4))) & 3;
+        const int low2 = (btq->qs[j / 4] >> (2 * (j % 4))) & 3;
+        const int hi1  = (btq->qr[j / 8] >> (j % 8)) & 1;
+        const int idx  = low2 | (hi1 << 2);
         sumf += (float)sq[j] * centroids[idx];
     }
 

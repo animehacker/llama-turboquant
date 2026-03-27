@@ -1810,6 +1810,19 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             v = ggml_transpose(ctx0, v);
         }
 
+        // Dequant tq3_0 K/V for flash attention.
+        // dequantize_block_tq3_0 runs inverse WHT, restoring original values.
+        // Use F32 intermediate (CPU backend can't dequant to F16).
+        // Flash attention's existing F32→F16 conversion handles the rest.
+        if (k->type == GGML_TYPE_TQ3_0) {
+            k = ggml_cast(ctx0, k, GGML_TYPE_F32);
+            cb(k, "k_dequant", il);
+        }
+        if (v->type == GGML_TYPE_TQ3_0) {
+            v = ggml_cast(ctx0, v, GGML_TYPE_F32);
+            cb(v, "v_dequant", il);
+        }
+
         // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
         if (k->type == GGML_TYPE_F32) {
             k = ggml_cast(ctx0, k, GGML_TYPE_F16);
@@ -1882,6 +1895,13 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
         ggml_soft_max_add_sinks(kq, sinks);
         cb(kq, "kq_soft_max", il);
+
+        // Dequant quantized V cache (e.g., tq3_0) to f32 for attention
+        // Note: must use F32, not F16 — CPU backend only supports quantized→F32 dequant
+        if (ggml_is_quantized(v->type)) {
+            v = ggml_cast(ctx0, v, GGML_TYPE_F32);
+            cb(v, "v_dequant", il);
+        }
 
         if (!v_trans) {
             // note: avoid this branch

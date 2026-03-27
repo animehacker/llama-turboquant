@@ -348,7 +348,11 @@ llama_context::llama_context(
 
         if (!cparams.flash_attn) {
             if (ggml_is_quantized(params.type_v)) {
-                throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
+                if (params.type_v == GGML_TYPE_TQ3_0) {
+                    LLAMA_LOG_WARN("%s: tq3_0 V without flash_attn - will dequant V in attention graph\n", __func__);
+                } else {
+                    throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention");
+                }
             }
         }
     }
@@ -2953,13 +2957,12 @@ llama_context * llama_init_from_model(
         }
     }
 
-    // TQ3_0 K cache has no flash attention kernel support - force off
+    // TQ3_0 K cache: dequant K/V in attention graph, then use flash attention
     if (params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_DISABLED && params.type_k == GGML_TYPE_TQ3_0) {
-        LLAMA_LOG_WARN("%s: flash_attn is not supported with TQ3_0 K cache - forcing off\n", __func__);
-        params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+        LLAMA_LOG_WARN("%s: TQ3_0 K cache with flash_attn - will dequant K/V in attention graph\n", __func__);
     }
 
-    if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO && ggml_is_quantized(params.type_v)) {
+    if (ggml_is_quantized(params.type_v)) {
         const uint32_t blck_size = ggml_blck_size(params.type_v);
         for (uint32_t il = 0; il < model->hparams.n_layer; ++il) {
             if (model->hparams.n_embd_head_v(il) % blck_size != 0) {
@@ -2971,8 +2974,12 @@ llama_context * llama_init_from_model(
     }
 
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
-        LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
-        return nullptr;
+        if (params.type_v == GGML_TYPE_TQ3_0) {
+            LLAMA_LOG_WARN("%s: tq3_0 V cache without flash_attn - will dequant V in attention graph\n", __func__);
+        } else {
+            LLAMA_LOG_ERROR("%s: V cache quantization requires flash_attn\n", __func__);
+            return nullptr;
+        }
     }
 
     if (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED &&

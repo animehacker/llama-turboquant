@@ -2350,8 +2350,12 @@ void dequantize_row_tq2_0(const block_tq2_0 * GGML_RESTRICT x, float * GGML_REST
 //   {-1.510, -0.4528, +0.4528, +1.510}
 //
 
-// Codebook centroids (normalized — will be scaled by per-block 'd')
-static const float tq3_centroids[4] = { -1.510f, -0.4528f, 0.4528f, 1.510f };
+// 3-bit Lloyd-Max centroids for N(0,1) scaled by sqrt(128) (from TurboQuant paper)
+// After WHT + scale normalization, values approximate this distribution
+static const float tq3_centroids[8] = {
+    -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+     0.2428f,  0.7434f,  1.3336f,  2.1573f
+};
 
 // QJL correction constant: sqrt(pi/2) / block_size
 static const float TQ3_QJL_SCALE = 0.03921875f;  // sqrt(pi/2) / 32 ≈ 1.2533 / 32
@@ -2432,36 +2436,31 @@ void quantize_row_tq3_0_ref(const float * GGML_RESTRICT x, block_tq3_0 * GGML_RE
             if (av > amax) amax = av;
         }
 
-        const float d = amax / 1.510f;
+        const float d = amax / 2.1573f;
         const float id = d > 0.0f ? 1.0f / d : 0.0f;
 
         y[i].gamma = GGML_FP32_TO_FP16(d);
 
-        // --- Step 2: 2-bit scalar quantize each rotated value ---
+        // --- Step 2: 3-bit scalar quantize each rotated value (8 centroids) ---
         memset(y[i].qs, 0, sizeof(y[i].qs));
         memset(y[i].qr, 0, sizeof(y[i].qr));
-
-        float residuals[QK_TQ3_0];
 
         for (int j = 0; j < QK_TQ3_0; j++) {
             float xn = rotated[j] * id;
 
             int idx;
-            if (xn < 0.0f) {
-                idx = (xn < -0.9814f) ? 0 : 1;
-            } else {
-                idx = (xn < 0.9814f) ? 2 : 3;
-            }
+            if (xn < -1.7455f)      { idx = 0; }
+            else if (xn < -1.0385f) { idx = 1; }
+            else if (xn < -0.4931f) { idx = 2; }
+            else if (xn < 0.0f)     { idx = 3; }
+            else if (xn < 0.4931f)  { idx = 4; }
+            else if (xn < 1.0385f)  { idx = 5; }
+            else if (xn < 1.7455f)  { idx = 6; }
+            else                     { idx = 7; }
 
-            y[i].qs[j / 4] |= (idx << (2 * (j % 4)));
-            residuals[j] = rotated[j] - d * tq3_centroids[idx];
-        }
-
-        // --- Step 3: QJL signs = sign(residual) ---
-        for (int j = 0; j < QK_TQ3_0; j++) {
-            if (residuals[j] >= 0.0f) {
-                y[i].qr[j / 8] |= (1 << (j % 8));
-            }
+            // Pack 3-bit index: lower 2 bits in qs, upper 1 bit in qr
+            y[i].qs[j / 4] |= ((idx & 3) << (2 * (j % 4)));
+            y[i].qr[j / 8] |= (((idx >> 2) & 1) << (j % 8));
         }
     }
 }
@@ -2473,10 +2472,12 @@ void dequantize_row_tq3_0(const block_tq3_0 * GGML_RESTRICT x, float * GGML_REST
     for (int64_t i = 0; i < nb; ++i) {
         const float d = GGML_FP16_TO_FP32(x[i].gamma);
 
-        // Dequantize to rotated space
+        // Dequantize to rotated space (3-bit index: low 2 bits in qs, high 1 bit in qr)
         float rotated[QK_TQ3_0];
         for (int j = 0; j < QK_TQ3_0; j++) {
-            const int idx = (x[i].qs[j / 4] >> (2 * (j % 4))) & 3;
+            const int low2 = (x[i].qs[j / 4] >> (2 * (j % 4))) & 3;
+            const int hi1  = (x[i].qr[j / 8] >> (j % 8)) & 1;
+            const int idx  = low2 | (hi1 << 2);
             rotated[j] = d * tq3_centroids[idx];
         }
 
