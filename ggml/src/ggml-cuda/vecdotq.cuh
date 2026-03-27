@@ -1287,7 +1287,9 @@ static __device__ __forceinline__ float vec_dot_tq3_0_q8_1(
         sumf += (float)sq[j] * centroids[idx];
     }
 
-    // Scale: d_tq3 * d_q8 / 32  (two 1/sqrt(32) normalizations combined)
+    // Scale: d_tq3 * d_q8 / sqrt(32)
+    // Key WHT has 1/sqrt(32) normalization, query WHT here does not,
+    // so only one factor of 1/sqrt(32) is needed (not 1/32).
     const float d_q8 = __low2float(bq8_1[0].ds);
-    return sumf * d * d_q8 * 0.03125f;  // 0.03125 = 1/32
+    return sumf * d * d_q8 * 0.17677669529663688f;  // 1/sqrt(32)
 }
