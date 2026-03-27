@@ -305,6 +305,8 @@ git diff upstream/master..main
 
 ## Credits
 
-This project is built on top of [llama.cpp](https://github.com/ggml-org/llama.cpp) by [Georgi Gerganov](https://github.com/ggerganov) and the [ggml-org](https://github.com/ggml-org) community. All the original llama.cpp documentation, features, and model support remain fully functional. See the [upstream README](https://github.com/ggml-org/llama.cpp/blob/master/README.md) for the full llama.cpp documentation.
+- **[unixsysdev](https://github.com/unixsysdev)** ([llama-turboquant](https://github.com/unixsysdev/llama-turboquant)) — Original tq3_0 implementation for llama.cpp, including the CUDA MMVQ kernel with query-side WHT and the 14-byte block layout. This fork builds directly on his work, extending it with normalization fixes, V cache compression, and flash attention integration.
+- **[Georgi Gerganov](https://github.com/ggerganov)** and the **[ggml-org](https://github.com/ggml-org)** community — [llama.cpp](https://github.com/ggml-org/llama.cpp) and the GGML tensor library that this project is built on. All original llama.cpp documentation, features, and model support remain fully functional. See the [upstream README](https://github.com/ggml-org/llama.cpp/blob/master/README.md) for full documentation.
+- **Zirlin et al.** — [TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026), the algorithm this implementation is based on.
 
 **License:** MIT (same as upstream llama.cpp)
