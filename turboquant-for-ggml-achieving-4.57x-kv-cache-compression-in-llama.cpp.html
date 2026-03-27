@@ -203,9 +203,9 @@ $$f_X(x) = \frac{\Gamma(d/2)}{\sqrt{\pi}\,\Gamma((d-1)/2)} (1 - x^2)^{(d-3)/2}$$
 
 <p>In high dimensions ($d \geq 64$), this converges to $\mathcal{N}(0, 1/d)$ with nearly independent coordinates. This means a <strong>single optimal scalar quantizer</strong> works for all coordinates &mdash; no per-channel calibration needed.</p>
 
-<p><strong>Stage 2 &mdash; QJL Residual Correction (Optional):</strong></p>
+<p><strong>Stage 2 &mdash; QJL Residual Correction (Not Implemented):</strong></p>
 
-<p>The Quantized Johnson-Lindenstrauss transform provides unbiased inner-product estimation on the quantization residual. For our 3-bit implementation, I use only Stage 1 (PolarQuant), which already achieves the target 4.57x compression with excellent quality.</p>
+<p>The full TurboQuant algorithm includes a second stage using the Quantized Johnson-Lindenstrauss transform for residual correction. <strong>This implementation does not include QJL.</strong> Instead of the paper's 2-bit quantization + 1-bit QJL scheme, I use 3-bit Lloyd-Max quantization directly (8 centroids). The <code>qr</code> bits in the block layout store the upper bit of the 3-bit centroid index, not QJL projection signs. No random projection matrix is stored or used. See Section 9.2 for discussion of QJL as future work.</p>
 
 <h3>2.2 Lloyd-Max Centroids for 3-Bit Quantization</h3>
 

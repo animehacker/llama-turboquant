@@ -17,24 +17,25 @@ I extended his work with:
 
 ## What Is TQ3_0?
 
-TQ3_0 (**TurboQuant 3-bit, revision 0**) implements the TurboQuant pipeline for KV cache compression:
+TQ3_0 (**TurboQuant 3-bit, revision 0**) implements Stage 1 (PolarQuant) of the TurboQuant pipeline for KV cache compression:
 
 1. **Walsh-Hadamard Rotation** — A fast orthogonal transform that Gaussianizes block values
-2. **Optimal 2-bit Scalar Codebook** — Max-Lloyd centroids `{-1.51, -0.453, +0.453, +1.51}` tuned for Gaussian distributions
-3. **QJL Residual Signs** — 1-bit sign of the quantization residual for error correction
+2. **3-bit Lloyd-Max Codebook** — 8 optimal centroids `{-2.157, -1.334, -0.743, -0.243, +0.243, +0.743, +1.334, +2.157}` for Gaussian distributions
+
+**Note:** This implementation does **not** include TurboQuant's Stage 2 (QJL residual correction). The `qr` bits store the upper bit of the 3-bit centroid index, not QJL projection signs. See [Future Work](#future-work) for details.
 
 Each block of 32 values is stored as:
 
 | Field | Size | Description |
 |-------|------|-------------|
-| `qs[8]` | 8 bytes | 32 × 2-bit codebook indices (4 per byte) |
-| `qr[4]` | 4 bytes | 32 × 1-bit QJL residual signs |
+| `qs[8]` | 8 bytes | 32 × lower 2 bits of 3-bit index (4 per byte) |
+| `qr[4]` | 4 bytes | 32 × upper 1 bit of 3-bit index |
 | `gamma` | 2 bytes (FP16) | Per-block scale factor |
 | **Total** | **14 bytes** | **= 3.5 bits per value** |
 
 ### Why It Works
 
-The key insight from TurboQuant: a random orthogonal rotation makes **any** input distribution approximately Gaussian (by the Central Limit Theorem). Once Gaussianized, a fixed 4-level codebook quantizer achieves near-optimal MSE without any data-dependent calibration.
+The key insight from PolarQuant/TurboQuant: a random orthogonal rotation makes **any** input distribution approximately Gaussian (by the Central Limit Theorem). Once Gaussianized, a fixed 8-level (3-bit) Lloyd-Max codebook quantizer achieves near-optimal MSE without any data-dependent calibration.
 
 I use a per-block **Walsh-Hadamard Transform (WHT32)** as the rotation:
 - **Deterministic** — No stored state, no random seeds, perfectly reproducible
@@ -206,14 +207,13 @@ Forward (quantize):
   2. Apply random sign flips (fixed ±1 pattern)
   3. Walsh-Hadamard butterfly transform (5 stages of add/sub)
   4. Normalize by 1/√32
-  5. Find amax → compute scale d = amax / 1.51
-  6. Quantize each value to nearest centroid: {-1.51, -0.453, +0.453, +1.51}
-  7. Pack 2-bit index (4 per byte) → qs[8]
-  8. Compute residual sign → qr[4]
-  9. Store scale as FP16 → gamma
+  5. Find amax → compute scale d = amax / 2.1573
+  6. Quantize each value to nearest of 8 Lloyd-Max centroids
+  7. Pack 3-bit index: lower 2 bits → qs[8], upper 1 bit → qr[4]
+  8. Store scale as FP16 → gamma
 
 Inverse (dequantize):
-  1. Unpack 2-bit indices → lookup centroid → multiply by scale
+  1. Unpack 3-bit indices → lookup centroid → multiply by scale
   2. Walsh-Hadamard butterfly transform (5 stages)
   3. Normalize by 1/√32 and undo sign flips
   4. Output reconstructed values
@@ -302,10 +302,17 @@ git diff upstream/master..main
 
 ## References
 
-- [TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate](https://arxiv.org/abs/2504.19874) — Zandieh, Daliri, Hadian, Mirrokni — ICLR 2026. The umbrella algorithm combining PolarQuant + QJL.
+- [TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate](https://arxiv.org/abs/2504.19874) — Zandieh, Daliri, Hadian, Mirrokni — ICLR 2026. The umbrella algorithm combining PolarQuant + QJL. **Note:** This implementation covers Stage 1 (PolarQuant) only; QJL (Stage 2) is not yet implemented.
 - [PolarQuant: Quantizing KV Caches with Polar Transformation](https://arxiv.org/abs/2502.02617) — AISTATS 2026. The rotation step that Gaussianizes KV cache vectors.
-- [QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead](https://arxiv.org/abs/2406.03482) — Zandieh et al., 2024. The 1-bit residual correction step.
+- [QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead](https://arxiv.org/abs/2406.03482) — Zandieh et al., 2024. The 1-bit residual correction step (not yet implemented — see Future Work).
 - [QuIP#: Even Better LLM Quantization with Hadamard Incoherence](https://arxiv.org/abs/2402.04396) — Tseng et al., 2024. Inspiration for using Hadamard transforms.
+
+---
+
+## Future Work
+
+- **QJL Residual Correction (Stage 2)** — The current implementation uses only PolarQuant (Stage 1) of the TurboQuant pipeline. Adding the Quantized Johnson-Lindenstrauss residual correction would require storing a random projection matrix and using the `qr` bits for projection signs instead of the current 3-bit index packing. This could reduce quantization error at the same bit budget, or enable a 2-bit + 1-bit QJL scheme matching the paper's original design.
+- **Fused Flash Attention with WHT** — A custom flash attention kernel that reads tq3_0 directly with in-kernel WHT would eliminate the dequant overhead, potentially recovering speed lost in the F32→F16 conversion path.
 
 ---
 
