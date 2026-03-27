@@ -5,7 +5,13 @@
 [![Based on llama.cpp](https://img.shields.io/badge/based%20on-llama.cpp-blue)](https://github.com/ggml-org/llama.cpp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-This is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp) that adds **TQ3_0** — a 3-bit KV cache quantization type implementing Google Research’s [TurboQuant](https://arxiv.org/abs/2504.19874) pipeline (ICLR 2026), which combines [PolarQuant](https://arxiv.org/abs/2502.02617) random rotation with [QJL](https://arxiv.org/abs/2406.03482) residual correction. It achieves **near-lossless quality** (4.6% PPL degradation) at **4.6× K-cache compression** by combining a Walsh-Hadamard rotation with optimal scalar codebook quantization.
+This fork builds on [unixsysdev’s tq3_0 implementation](https://github.com/unixsysdev/llama-turboquant), which provided the foundational CUDA MMVQ kernel with query-side WHT and the 14-byte block layout for [llama.cpp](https://github.com/ggml-org/llama.cpp). His implementation achieved ~2.4x K-cache compression using Google Research’s [TurboQuant](https://arxiv.org/abs/2504.19874) pipeline (ICLR 2026).
+
+We extended his work with:
+- **Normalization fix** — corrected `1/32` → `1/√32` WHT normalization, eliminating quality degradation
+- **V cache compression** — added tq3_0 support for V cache (non-transposed storage + graph-side dequant), achieving **4.57x total KV compression**
+- **Flash attention integration** — graph-side dequantization enables flash attention with tq3_0, extending max context from ~16K to **72K+**
+- **Cross-backend compatibility** — F32 dequant path for CPU pipeline parallelism
 
 ---
 
