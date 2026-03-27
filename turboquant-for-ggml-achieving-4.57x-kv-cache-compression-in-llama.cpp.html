@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TurboQuant for GGML: Achieving 4.57x KV Cache Compression in llama.cpp</title>
+<script>
+MathJax = {
+  tex: { inlineMath: [['$', '$']], displayMath: [['$$', '$$']] },
+  svg: { fontCache: 'global' }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" async></script>
+<style>
+:root {
+  --bg: #ffffff;
+  --text: #1a1a2e;
+  --accent: #2d5f8a;
+  --border: #d0d7de;
+  --code-bg: #f6f8fa;
+  --table-header: #f0f3f6;
+  --table-stripe: #f8f9fb;
+  --highlight: #fff3cd;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: var(--text);
+  background: var(--bg);
+  line-height: 1.7;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+h1 {
+  font-size: 1.9em;
+  line-height: 1.25;
+  margin-bottom: 0.4em;
+  color: var(--text);
+}
+h2 {
+  font-size: 1.35em;
+  margin-top: 2.2em;
+  margin-bottom: 0.6em;
+  padding-bottom: 0.3em;
+  border-bottom: 2px solid var(--accent);
+  color: var(--accent);
+}
+h3 {
+  font-size: 1.1em;
+  margin-top: 1.6em;
+  margin-bottom: 0.4em;
+  color: var(--text);
+}
+p { margin-bottom: 0.9em; }
+.meta {
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  font-size: 0.9em;
+  color: #555;
+  margin-bottom: 2em;
+  line-height: 1.5;
+}
+.meta strong { color: var(--text); }
+.meta a { color: var(--accent); text-decoration: none; }
+.meta a:hover { text-decoration: underline; }
+hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+.abstract {
+  background: var(--code-bg);
+  border-left: 4px solid var(--accent);
+  padding: 1.2em 1.4em;
+  margin: 1.5em 0;
+  font-size: 0.95em;
+}
+.pretext {
+  font-style: italic;
+  background: #fafbfc;
+  padding: 1.2em 1.4em;
+  margin: 1.5em 0;
+  border-left: 3px solid #ccc;
+}
+code {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 0.88em;
+  background: var(--code-bg);
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+}
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1em 1.2em;
+  overflow-x: auto;
+  margin: 1em 0;
+  line-height: 1.5;
+}
+pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85em;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.9em;
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+}
+th, td {
+  padding: 0.55em 0.8em;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+th {
+  background: var(--table-header);
+  font-weight: 600;
+  white-space: nowrap;
+}
+tr:nth-child(even) td { background: var(--table-stripe); }
+tr.highlight td { background: var(--highlight); font-weight: 600; }
+ol, ul { margin: 0.5em 0 1em 1.5em; }
+li { margin-bottom: 0.3em; }
+strong { color: var(--text); }
+.comment { color: #6a737d; }
+.keyword { color: #d73a49; }
+.pending { color: #888; font-style: italic; }
+.section-num { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>TurboQuant for GGML: Achieving 4.57x KV Cache Compression in llama.cpp</h1>
+<div class="meta">
+<strong>Author:</strong> Oliver Church<br>
+<strong>Date:</strong> March 28, 2026<br>
+<strong>Repository:</strong> <a href="https://github.com/animehacker/llama-turboquant">github.com/animehacker/llama-turboquant</a><br>
+<strong>Based on:</strong> <em>TurboQuant: Online KV Cache Quantization with Theoretical Guarantees</em> (ICLR 2026, <a href="https://arxiv.org/abs/2504.19874">arXiv:2504.19874</a>)
+</div>
+
+<hr>
+
+<h2>Abstract</h2>
+<div class="abstract">
+<p>I present a practical CUDA implementation of Google's TurboQuant algorithm within llama.cpp's GGML framework, achieving <strong>4.57x KV cache compression</strong> with <strong>72K+ context</strong> on Llama-3.3-70B-Instruct across dual NVIDIA RTX 3090 GPUs. The implementation compresses both K and V caches to 3.5 bits per value using 3-bit Lloyd-Max centroid quantization with Walsh-Hadamard Transform (WHT) rotation. I detail three phases of engineering challenges and solutions: (1) K cache compression with a critical normalization fix and 3-bit upgrade, (2) V cache compression requiring non-transposed storage and cross-backend dequantization workarounds, and (3) a graph-side dequantization strategy that re-enables flash attention for tq3_0, breaking through the O(n&sup2;) attention memory wall that previously limited context to 16K. The final system stores KV cache at 4.57x compression while leveraging flash attention's tiled computation for constant-memory attention at any context length. This work demonstrates that TurboQuant's theoretical compression guarantees translate directly to real-world long-context multi-GPU inference on consumer hardware.</p>
+</div>
+
+<hr>
+
+<h2>Pretext</h2>
+<div class="pretext">
+<p>The local LLM community has long treated tokens per second as the defining benchmark of usability. But for anyone pushing these models toward real work &mdash; agentic workflows, long-document analysis, multi-turn reasoning &mdash; the context window is what actually matters. TPS is a comfort metric; context length is the capability ceiling. Every serious researcher knows this, and it became obvious to me early on despite being relatively new to the field.</p>
+<p>This paper is a narrow contribution built on top of far more significant work: Google's TurboQuant algorithm, Georgi Gerganov's (llama.cpp creator) llama.cpp and GGML framework, and the community contributors acknowledged below &mdash; in particular unixsysdev's TurboQuant implementation, whose query-side WHT architecture I adopted and extended after recognizing it solved the multi-GPU memory explosion that blocked my own approach.</p>
+</div>
+
+<h2><span class="section-num">1.</span> Introduction</h2>
+
+<p>Large Language Models (LLMs) store intermediate attention state in a Key-Value (KV) cache that grows linearly with context length. For Llama-3.3-70B with 80 layers, 8 KV heads, and 128-dimensional head embeddings, each token consumes:</p>
+
+$$\text{KV per token} = 2 \times 80 \times 8 \times 128 \times 2 \text{ bytes} = 327{,}680 \text{ bytes} \approx 0.31 \text{ MiB}$$
+
+<p>At the model's full 131K context length, this exceeds 40 GiB &mdash; more than the model weights themselves. KV cache compression is therefore essential for practical long-context inference on consumer hardware.</p>
+
+<p>TurboQuant (Zirlin et al., ICLR 2026) provides a theoretically-grounded approach: random rotation followed by Lloyd-Max scalar quantization, achieving near-optimal distortion bounds. The paper claims compression to 3.5 bits per value (4.57x vs fp16) with &ldquo;absolute quality neutrality&rdquo; on LongBench benchmarks. Our empirical results (Section 7.2) characterize the actual quality&ndash;compression tradeoff on WikiText-2 perplexity.</p>
+
+<p>However, TurboQuant's paper provides only an algorithmic description. Translating it into a production CUDA implementation within llama.cpp's GGML tensor library required solving several non-trivial engineering problems:</p>
+
+<ol>
+<li><strong>Query-side WHT in MMVQ kernels</strong> &mdash; avoiding O(n&sup2;) graph-side operations</li>
+<li><strong>Normalization factor derivation</strong> &mdash; the asymmetric <code>1/&radic;32</code> (not <code>1/32</code>)</li>
+<li><strong>3-bit index packing</strong> in an existing 14-byte block layout</li>
+<li><strong>V cache storage</strong> &mdash; bypassing the transposed element-scatter path incompatible with block quantization</li>
+<li><strong>Cross-backend dequantization</strong> &mdash; CPU backend limitations requiring F32 (not F16) intermediate format</li>
+<li><strong>Flash attention re-enablement</strong> &mdash; dequanting tq3_0 in the attention graph to leverage existing flash attention infrastructure</li>
+</ol>
+
+<p>This paper documents the full implementation across three phases, connecting the theoretical algorithm to practical CUDA code.</p>
+
+<hr>
+
+<h2><span class="section-num">2.</span> Background</h2>
+
+<h3>2.1 The TurboQuant Algorithm</h3>
+
+<p>TurboQuant operates in two stages:</p>
+
+<p><strong>Stage 1 &mdash; PolarQuant (MSE-Optimal Quantization):</strong></p>
+
+<p>Given a KV cache vector $\mathbf{x} \in \mathbb{R}^d$:</p>
+<ol>
+<li>Extract and store the norm: $\|\mathbf{x}\|_2$ (fp16)</li>
+<li>Normalize: $\hat{\mathbf{x}} = \mathbf{x} / \|\mathbf{x}\|_2$</li>
+<li>Apply random orthogonal rotation: $\mathbf{y} = \Pi \hat{\mathbf{x}}$</li>
+<li>Quantize each coordinate independently: $q_j = \arg\min_k |y_j - c_k|$</li>
+</ol>
+
+<p>The rotation exploits a key mathematical property (Lemma 1 of the paper): for a uniform random point on the unit hypersphere $S^{d-1}$, each coordinate follows:</p>
+
+$$f_X(x) = \frac{\Gamma(d/2)}{\sqrt{\pi}\,\Gamma((d-1)/2)} (1 - x^2)^{(d-3)/2}$$
+
+<p>In high dimensions ($d \geq 64$), this converges to $\mathcal{N}(0, 1/d)$ with nearly independent coordinates. This means a <strong>single optimal scalar quantizer</strong> works for all coordinates &mdash; no per-channel calibration needed.</p>
+
+<p><strong>Stage 2 &mdash; QJL Residual Correction (Optional):</strong></p>
+
+<p>The Quantized Johnson-Lindenstrauss transform provides unbiased inner-product estimation on the quantization residual. For our 3-bit implementation, I use only Stage 1 (PolarQuant), which already achieves the target 4.57x compression with excellent quality.</p>
+
+<h3>2.2 Lloyd-Max Centroids for 3-Bit Quantization</h3>
+
+<p>The optimal quantization levels for a $\mathcal{N}(0, \sigma^2)$ distribution are the Lloyd-Max centroids, obtained by iteratively minimizing mean squared error. For 3-bit quantization (8 levels), the centroids normalized to unit variance are:</p>
+
+<table>
+<tr><th>Index</th><th>Centroid $c_k$</th><th>Decision Boundary</th></tr>
+<tr><td>0</td><td>-2.1573</td><td>$-\infty$</td></tr>
+<tr><td>1</td><td>-1.3336</td><td>-1.7455</td></tr>
+<tr><td>2</td><td>-0.7434</td><td>-1.0385</td></tr>
+<tr><td>3</td><td>-0.2428</td><td>-0.4931</td></tr>
+<tr><td>4</td><td>+0.2428</td><td>0.0</td></tr>
+<tr><td>5</td><td>+0.7434</td><td>+0.4931</td></tr>
+<tr><td>6</td><td>+1.3336</td><td>+1.0385</td></tr>
+<tr><td>7</td><td>+2.1573</td><td>+1.7455</td></tr>
+</table>
+
+<p>Decision boundaries are midpoints between adjacent centroids. The scale factor $d = a_{\max} / 2.1573$ maps the outermost centroid to the maximum absolute value in the block.</p>
+
+<h3>2.3 Walsh-Hadamard Transform as Practical Rotation</h3>
+
+<p>The paper specifies a dense random rotation matrix $\Pi$ via QR decomposition of a Gaussian matrix &mdash; an $O(d^2)$ operation. I substitute the randomized Walsh-Hadamard Transform (WHT):</p>
+
+$$\Pi = \frac{1}{\sqrt{d}} D_2 \cdot H_d \cdot D_1$$
+
+<p>where $H_d$ is the $d \times d$ Hadamard matrix and $D_1, D_2$ are diagonal matrices of random signs $\{+1, -1\}$. The WHT has $O(d \log d)$ complexity via the butterfly algorithm &mdash; for $d = 32$, this is 5 stages of in-place additions/subtractions:</p>
+
+<pre><code>for step in {1, 2, 4, 8, 16}:
+    for i in range(0, 32, 2*step):
+        for j in range(i, i+step):
+            a, b = x[j], x[j+step]
+            x[j]      = a + b
+            x[j+step] = a - b</code></pre>
+
+<p>The randomized WHT preserves the concentration-of-measure properties that make TurboQuant work: after transformation, coordinates are approximately i.i.d. Gaussian, enabling uniform scalar quantization.</p>
+
+<h3>2.4 GGML Architecture</h3>
+
+<p>llama.cpp uses the GGML tensor library with a graph-based computation model:</p>
+<ul>
+<li><strong>Block-quantized types</strong>: Data stored in fixed-size blocks (e.g., 32 elements). Each block contains packed quantization indices plus metadata (scale factors, etc.)</li>
+<li><strong>MMVQ kernels</strong>: Matrix-vector multiplication with quantized types. Each kernel implements a custom <code>vec_dot</code> function that dequantizes and computes dot products in a single fused operation</li>
+<li><strong>KV cache</strong>: Stored as GGML tensors with configurable type per cache (K and V independently)</li>
+<li><strong>Pipeline parallelism</strong>: Multi-GPU inference splits the graph across devices with CPU-host bridge operations</li>
+</ul>
+
+<hr>
+
+<h2><span class="section-num">3.</span> The <code>block_tq3_0</code> Data Layout</h2>
+
+<p>I reuse the existing <code>block_tq3_0</code> struct from unixsysdev's implementation &mdash; 14 bytes per 32 elements (3.5 bits/value):</p>
+
+<pre><code>#define QK_TQ3_0 32
+typedef struct {
+    uint8_t   qs[8];    <span class="comment">// Lower 2 bits of 3-bit index: 32 &times; 2 bits = 8 bytes</span>
+    uint8_t   qr[4];    <span class="comment">// Upper 1 bit of 3-bit index: 32 &times; 1 bit = 4 bytes</span>
+    ggml_half gamma;     <span class="comment">// Scale factor d = amax / 2.1573: 2 bytes (fp16)</span>
+} block_tq3_0;           <span class="comment">// Total: 14 bytes</span></code></pre>
+
+<p>The 3-bit index for element $j$ is packed as:</p>
+
+$$\text{idx}_j = (\texttt{qs}[j/4] \gg 2(j \bmod 4)) \mathbin{\&} 3 \;\;\big|\;\; \big((\texttt{qr}[j/8] \gg (j \bmod 8)) \mathbin{\&} 1\big) \ll 2$$
+
+<p>This gives indices 0&ndash;7, mapped to centroids via the Lloyd-Max table.</p>
+
+<p><strong>Compression ratio:</strong></p>
+
+$$\frac{32 \times 16 \text{ bits (fp16)}}{14 \times 8 \text{ bits}} = \frac{512}{112} = 4.571\times$$
+
+<hr>
+
+<h2><span class="section-num">4.</span> Phase 1: K Cache Compression (3-Bit, 8 Centroids)</h2>
+
+<h3>4.1 Starting Point &mdash; unixsysdev's 2-Bit Implementation</h3>
+
+<p>The community implementation by unixsysdev provided the architectural foundation: query-side WHT applied inside the MMVQ dot-product kernel, avoiding the graph-side WHT operations that caused multi-GPU memory explosions in our earlier approach. However, it used only 2-bit quantization (4 centroids) and had a critical normalization bug.</p>
+
+<h3>4.2 Bug Fix: The <code>1/&radic;32</code> Normalization Factor</h3>
+
+<p>The original implementation produced garbage output (repeating prompts endlessly). Root cause analysis revealed an incorrect normalization factor in the MMVQ kernel.</p>
+
+<p><strong>The asymmetry:</strong> During K cache quantization (set_rows), the WHT applies with normalization factor $1/\sqrt{32}$:</p>
+
+$$\mathbf{k}_{\text{rotated}} = \frac{1}{\sqrt{32}} \cdot H_{32} \cdot D_1 \cdot \mathbf{k}$$
+
+<p>During attention computation, the query-side WHT in the MMVQ kernel does <strong>not</strong> normalize (it operates on int8 values to preserve precision):</p>
+
+$$\mathbf{q}_{\text{rotated}} = H_{32} \cdot D_1 \cdot \mathbf{q} \quad \text{(no } 1/\sqrt{32} \text{)}$$
+
+<p>The dot product becomes:</p>
+
+$$\langle \mathbf{q}_{\text{rot}}, \mathbf{k}_{\text{rot}} \rangle = \frac{1}{\sqrt{32}} \langle H \cdot D \cdot \mathbf{q},\; H \cdot D \cdot \mathbf{k} \rangle = \frac{1}{\sqrt{32}} \langle \mathbf{q}, \mathbf{k} \rangle$$
+
+<p>The original code used $1/32$ (product of two $1/\sqrt{32}$ factors), incorrectly assuming both sides were normalized. The fix: a single factor of $1/\sqrt{32} = 0.17677669529663688$.</p>
+
+<pre><code><span class="comment">// BEFORE (broken):</span> return sumf * d * d_q8 * 0.03125f;             <span class="comment">// 1/32</span>
+<span class="comment">// AFTER  (fixed):</span>  return sumf * d * d_q8 * 0.17677669529663688f;  <span class="comment">// 1/&radic;32</span></code></pre>
+
+<h3>4.3 Upgrade from 2-Bit to 3-Bit Quantization</h3>
+
+<p>I modified four files to upgrade from 4 centroids to 8:</p>
+
+<p><strong>GPU Quantization</strong> (<code>cpy-utils.cuh</code> &mdash; <code>quantize_f32_tq3_0_block</code>):</p>
+
+<pre><code>const float centroids[8] = {
+    -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+     0.2428f,  0.7434f,  1.3336f,  2.1573f
+};
+
+<span class="comment">// Scale: map outermost centroid to amax</span>
+const float d = amax / 2.1573f;
+const float id = d > 0.0f ? 1.0f / d : 0.0f;
+
+<span class="comment">// 7-boundary quantization (normalized space)</span>
+float xn = rotated[j] * id;
+int idx;
+if      (xn < -1.7455f) idx = 0;
+else if (xn < -1.0385f) idx = 1;
+else if (xn < -0.4931f) idx = 2;
+else if (xn <  0.0f)    idx = 3;
+else if (xn <  0.4931f) idx = 4;
+else if (xn <  1.0385f) idx = 5;
+else if (xn <  1.7455f) idx = 6;
+else                     idx = 7;
+
+<span class="comment">// 3-bit packing: low 2 bits &rarr; qs, high 1 bit &rarr; qr</span>
+y->qs[j / 4] |= ((idx & 3) << (2 * (j % 4)));
+y->qr[j / 8] |= (((idx >> 2) & 1) << (j % 8));</code></pre>
+
+<p><strong>GPU Dequantization</strong> (<code>convert.cu</code>) and <strong>MMVQ Dot Product</strong> (<code>vecdotq.cuh</code>): Same 3-bit extraction pattern.</p>
+
+<p><strong>CPU Reference</strong> (<code>ggml-quants.c</code>): Identical algorithm for CPU fallback path.</p>
+
+<h3>4.4 Phase 1 Results</h3>
+
+<p>Tested on Llama-3.3-70B-Instruct-Q4_K_M across 2&times; RTX 3090:</p>
+
+<table>
+<tr><th>Configuration</th><th>Prompt (t/s)</th><th>Generation (t/s)</th><th>KV Size (2K ctx)</th></tr>
+<tr><td>q8_0 baseline</td><td>66.3</td><td>17.1</td><td>~640 MiB</td></tr>
+<tr><td>tq3_0 K-only (v2, 3-bit)</td><td>29.2</td><td>15.9</td><td>~390 MiB</td></tr>
+</table>
+
+<p>Coherent, high-quality output with K-only compression. Generation speed within 7% of baseline.</p>
+
+<hr>
+
+<h2><span class="section-num">5.</span> Phase 2: V Cache Compression</h2>
+
+<h3>5.1 The Flash Attention Conflict</h3>
+
+<p>In llama.cpp, the tq3_0 K cache forces flash attention OFF (because the flash attention kernel cannot perform query-side WHT). However, quantized V cache types normally require flash attention ON (the flash kernel reads quantized V directly).</p>
+
+<p>This creates an apparent deadlock: tq3_0 K needs flash attention disabled, but quantized V needs it enabled.</p>
+
+<p><strong>Our solution:</strong> Bypass the flash attention requirement for V by inserting an explicit dequantization step in the attention graph. Instead of the flash kernel reading quantized V directly, I dequantize V to F32 before the standard matrix multiplication.</p>
+
+<h3>5.2 The V Transpose Problem</h3>
+
+<p>GGML's non-flash attention path stores V cache in <strong>transposed</strong> layout (<code>v_trans = true</code>). This enables efficient <code>ggml_mul_mat(v, kq)</code> without additional transposes. However, transposed storage scatters individual elements via <code>set_rows</code> with <code>ne00 = 1</code>.</p>
+
+<p>For block-quantized types like tq3_0 (block size 32), the CUDA kernel asserts:</p>
+<pre><code>GGML_ASSERT(ne00 % qk == 0)  <span class="comment">// 1 % 32 &ne; 0 &rarr; CRASH</span></code></pre>
+
+<p>Individual elements cannot be stored in a format that requires groups of 32.</p>
+
+<p><strong>Fix &mdash; Non-transposed V storage:</strong> I set <code>v_trans = false</code> when V type is quantized:</p>
+
+<pre><code><span class="comment">// llama-model.cpp &mdash; all 4 KV cache construction sites</span>
+/* attn_v_trans */ !cparams.flash_attn && !ggml_is_quantized(params.type_v),</code></pre>
+
+<p>With <code>v_trans = false</code>, V is stored row-wise (<code>ne00 = n_embd_v_gqa = 1024</code>), and $1024 \bmod 32 = 0$ &mdash; compatible with block quantization.</p>
+
+<h3>5.3 The Graph-Side Dequant + Transpose</h3>
+
+<p>With non-transposed V, the attention graph must:</p>
+<ol>
+<li><strong>Dequantize</strong> tq3_0 &rarr; floating point</li>
+<li><strong>Transpose</strong> to match the expected layout for <code>ggml_mul_mat(v, kq)</code></li>
+</ol>
+
+<pre><code><span class="comment">// llama-graph.cpp &mdash; non-flash attention path</span>
+if (ggml_is_quantized(v->type)) {
+    v = ggml_cast(ctx0, v, GGML_TYPE_F32);  <span class="comment">// dequant</span>
+    cb(v, "v_dequant", il);
+}
+if (!v_trans) {
+    v = ggml_cont(ctx0, ggml_transpose(ctx0, v));  <span class="comment">// transpose</span>
+    cb(v, "v_cont", il);
+}</code></pre>
+
+<h3>5.4 Why F32, Not F16</h3>
+
+<p>Our first implementation used <code>ggml_cast(v, GGML_TYPE_F16)</code>. This crashed with <code>ops.cpp:571: fatal error</code> on CPU-hosted KV cache layers.</p>
+
+<p><strong>Root cause:</strong> The CPU backend's <code>ggml_compute_forward_dup</code> (which implements <code>ggml_cast</code>) supports dequantization from quantized types only to F32:</p>
+
+<pre><code><span class="comment">// ggml-cpu/ops.cpp</span>
+default:
+    if (ggml_is_quantized(src0->type) && dst->type == GGML_TYPE_F32) {
+        ggml_compute_forward_dup_from_q(params, dst);  <span class="comment">// only F32 supported</span>
+        break;
+    }
+    GGML_ABORT("fatal error");  <span class="comment">// F16 destination &rarr; crash</span></code></pre>
+
+<p>With pipeline parallelism, some layers' KV cache resides on CPU-host memory, triggering this CPU code path. Using F32 as the intermediate format resolves the issue across all backends.</p>
+
+<h3>5.5 Two Flash Attention Guards</h3>
+
+<p>llama.cpp has <strong>two</strong> separate validation points that reject quantized V without flash attention:</p>
+<ol>
+<li><strong>Constructor</strong> (<code>llama-context.cpp:349</code>): <code>throw std::runtime_error("quantized V cache was requested, but this requires Flash Attention")</code></li>
+<li><strong>Parameter validation</strong> (<code>llama-context.cpp:2973</code>): <code>return nullptr</code> with error log</li>
+</ol>
+
+<p>Both were modified to allow <code>GGML_TYPE_TQ3_0</code> as a specific exception, logging a warning instead of aborting.</p>
+
+<hr>
+
+<h2><span class="section-num">6.</span> Phase 3: Flash Attention via Graph-Side Dequantization</h2>
+
+<h3>6.1 The Quadratic Memory Wall</h3>
+
+<p>Phase 2 achieved full 4.57x KV cache compression, but revealed a critical limitation: without flash attention, the attention weight matrix requires $O(n^2)$ memory. At 16K context this consumed 2.3 GB/GPU in compute buffers; at 20K it exploded to 16+ GB, exceeding available VRAM. The compressed KV cache was no longer the bottleneck &mdash; the attention computation was.</p>
+
+<p>The tq3_0 K cache forced flash attention OFF because the flash attention kernel cannot perform the query-side WHT inside its fused computation. This appeared to be an intractable conflict: either use the query-side WHT (non-flash, $O(n^2)$ memory) or standard flash attention (incompatible with WHT-rotated keys).</p>
+
+<h3>6.2 The Key Insight: Dequantize, Then Flash</h3>
+
+<p>The breakthrough was recognizing that <code>dequantize_block_tq3_0</code> runs the <strong>full inverse WHT</strong>, restoring K/V to their original (un-rotated) space:</p>
+
+$$\mathbf{k}_{\text{dequant}} = \frac{1}{\sqrt{32}} H_{32}^{-1} \cdot D_1^{-1} \cdot (\gamma \cdot c_{q_j}) \approx \mathbf{k}_{\text{original}}$$
+
+<p>Since dequanted K &asymp; K<sub>original</sub>, standard $\mathbf{Q} \cdot \mathbf{K}^T$ attention works without any query-side WHT. The dequantization that already existed for the non-flash path could be reused to enable flash attention:</p>
+
+<ol>
+<li>Read tq3_0 K/V from the compressed cache (4.57x savings in VRAM)</li>
+<li>Dequantize to F32 via <code>ggml_cast</code> (inverse WHT + centroid lookup)</li>
+<li>Cast F32 &rarr; F16 (existing flash attention input path)</li>
+<li>Feed into standard <code>ggml_flash_attn_ext</code> (tiled, $O(n \times \text{tile})$ memory)</li>
+</ol>
+
+<h3>6.3 Implementation: Two Edits</h3>
+
+<p>The entire Phase 3 required only <strong>two code changes</strong>:</p>
+
+<p><strong>Edit 1 &mdash; Remove flash attention force-off</strong> (<code>llama-context.cpp</code>):</p>
+
+<pre><code><span class="comment">// BEFORE (Phase 2): Force flash attention OFF for tq3_0 K cache</span>
+if (params.type_k == GGML_TYPE_TQ3_0) {
+    params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+}
+
+<span class="comment">// AFTER (Phase 3): Allow flash attention &mdash; dequant handles compatibility</span>
+if (params.type_k == GGML_TYPE_TQ3_0) {
+    LLAMA_LOG_WARN("TQ3_0 K cache with flash_attn"
+                   " - will dequant K/V in attention graph\n");
+}</code></pre>
+
+<p><strong>Edit 2 &mdash; Dequant tq3_0 in flash attention path</strong> (<code>llama-graph.cpp</code>):</p>
+
+<pre><code><span class="comment">// NEW: dequant tq3_0 K/V before flash attention</span>
+<span class="comment">// inverse WHT restores original values; F32 intermediate for CPU compat</span>
+if (k->type == GGML_TYPE_TQ3_0) {
+    k = ggml_cast(ctx0, k, GGML_TYPE_F32);
+    cb(k, "k_dequant", il);
+}
+if (v->type == GGML_TYPE_TQ3_0) {
+    v = ggml_cast(ctx0, v, GGML_TYPE_F32);
+    cb(v, "v_dequant", il);
+}
+<span class="comment">// EXISTING: F32&rarr;F16 conversion feeds into ggml_flash_attn_ext</span>
+if (k->type == GGML_TYPE_F32) k = ggml_cast(ctx0, k, GGML_TYPE_F16);
+if (v->type == GGML_TYPE_F32) v = ggml_cast(ctx0, v, GGML_TYPE_F16);</code></pre>
+
+<p>All Phase 2 code (non-flash path, V transpose logic, guard bypasses) remains as a fallback when flash attention is explicitly disabled with <code>-fa 0</code>.</p>
+
+<h3>6.4 Phase 3 Results: From 16K to 80K Context</h3>
+
+<p>Flash attention reduced compute buffer memory from $O(n^2)$ to effectively constant:</p>
+
+<table>
+<tr><th>Context</th><th>KV Cache (tq3_0)</th><th>Compute Buffers</th><th>Gen (t/s)</th><th>Status</th></tr>
+<tr><td>2,048</td><td>140 MiB</td><td>2.9 GB/GPU</td><td>4.6</td><td>Works</td></tr>
+<tr><td>32,768</td><td>2,240 MiB</td><td>384 MiB/GPU</td><td>5.0</td><td>Works</td></tr>
+<tr><td>73,728</td><td>5,040 MiB</td><td>784 MiB/GPU</td><td>5.1</td><td>Works</td></tr>
+<tr class="highlight"><td>81,920</td><td>5,600 MiB</td><td>864 MiB/GPU</td><td>4.8</td><td>Works (0 MiB free)</td></tr>
+</table>
+
+<p>For comparison, f16 KV cache at 72K would require ~23 GiB &mdash; impossible on 2&times; RTX 3090 with a 70B model. With tq3_0, it fits with room to spare.</p>
+
+<p>The practical maximum context on our hardware is <strong>~80K tokens</strong> (both GPUs at 0 MiB free). The safe operating ceiling is <strong>72K tokens</strong>, leaving headroom for compute buffers. This represents a <strong>5&times; increase</strong> over the Phase 2 limit of 16K.</p>
+
+<hr>
+
+<h2><span class="section-num">7.</span> Results</h2>
+
+<h3>7.1 Full Compression Test</h3>
+
+<p><strong>Hardware:</strong> 2&times; NVIDIA RTX 3090 (24 GB each, sm_86), WSL2 Linux, CUDA 12.3<br>
+<strong>Model:</strong> Llama-3.3-70B-Instruct-Q4_K_M (39.6 GiB)</p>
+
+<table>
+<tr><th>Configuration</th><th>K bpw</th><th>V bpw</th><th>KV Size (8K)</th><th>Max Context</th><th>Compression</th><th>Gen (t/s)</th></tr>
+<tr><td>f16 / f16 (baseline)</td><td>16</td><td>16</td><td>2,560 MiB</td><td>~16K</td><td>1.00&times;</td><td>17.1</td></tr>
+<tr><td>tq3_0 K / f16 V</td><td>3.5</td><td>16</td><td>~1,560 MiB</td><td>~24K</td><td>1.64&times;</td><td>15.9</td></tr>
+<tr><td>tq3_0 K+V (Phase 2, non-flash)</td><td>3.5</td><td>3.5</td><td>560 MiB</td><td>~16K</td><td>4.57&times;</td><td>9.0</td></tr>
+<tr class="highlight"><td><strong>tq3_0 K+V (Phase 3, flash)</strong></td><td><strong>3.5</strong></td><td><strong>3.5</strong></td><td><strong>560 MiB</strong></td><td><strong>~80K</strong></td><td><strong>4.57&times;</strong></td><td><strong>5.1</strong></td></tr>
+</table>
+
+<p>Phase 3 trades generation speed (9.0 &rarr; 5.1 t/s) for a <strong>5&times; context length increase</strong> (16K &rarr; 80K). The speed reduction comes from dequanting K and V per-layer for flash attention input, versus Phase 2's fused MMVQ path which only dequants V. Both modes remain available &mdash; Phase 2 (non-flash) is faster for short context, Phase 3 (flash) is required for context beyond 16K.</p>
+
+<h3>7.2 Output Quality</h3>
+
+<p><strong>Perplexity (WikiText-2, Llama-3.3-70B-Instruct-Q4_K_M):</strong></p>
+
+<table>
+<tr><th>Configuration</th><th>Compression</th><th>WikiText-2 PPL</th><th>&Delta; PPL</th><th>&Delta; %</th></tr>
+<tr><td>f16 K / f16 V (baseline)</td><td>1.00&times;</td><td>4.0907 &plusmn; 0.024</td><td>&mdash;</td><td>&mdash;</td></tr>
+<tr><td>tq3_0 K / f16 V</td><td>1.64&times;</td><td>4.3593 &plusmn; 0.026</td><td>+0.269</td><td>+6.6%</td></tr>
+<tr><td>tq3_0 K / tq3_0 V</td><td>4.57&times;</td><td>4.3997 &plusmn; 0.026</td><td>+0.309</td><td>+7.6%</td></tr>
+</table>
+
+<p>The +7.6% perplexity increase with full K+V compression is comparable in magnitude to the degradation from Q4_K_M weight quantization itself (typically +2&ndash;7% over f16 weights). This is not the &ldquo;absolute quality neutrality&rdquo; claimed by the original TurboQuant paper, but represents a practical and usable tradeoff &mdash; particularly when the alternative is having no context at all beyond 16K.</p>
+
+<p>The K-only result (pending) is expected to show significantly less degradation, offering a middle ground: 1.64&times; compression with minimal quality impact.</p>
+
+<p><strong>Qualitative evaluation &mdash; both K-only and K+V configurations produce coherent, contextually appropriate output:</strong></p>
+
+<p><strong>Prompt:</strong> &ldquo;What is gravity?&rdquo;<br>
+<strong>K+V tq3_0 output:</strong> &ldquo;Gravity is a fundamental force of nature that causes objects with mass or energy to attract each other. It is a universal force that affects everything with mass or energy, from the smallest subatomic particles to the largest structures in the universe, such as galaxies and galaxy clusters.&rdquo;</p>
+
+<p><strong>Prompt:</strong> &ldquo;Explain the theory of general relativity and how it relates to quantum mechanics.&rdquo;<br>
+<strong>K+V tq3_0 output:</strong> &ldquo;What a delightful topic! The theory of general relativity, developed by Albert Einstein, is a fundamental concept in modern physics that describes the nature of gravity and its effects on spacetime. [...] In 1915, Einstein introduced general relativity as a revolutionary new understanding of gravity. The core idea is that gravity is not a force that acts between objects, as Newton had described, but rather a curvature of spacetime caused by the presence of mass and energy.&rdquo;</p>
+
+<h3>7.3 Memory Breakdown (8K Context)</h3>
+
+<pre><code>CUDA0 (RTX 3090): 24575 MiB total
+  Model: 20038 MiB | KV Cache: 287 MiB | Compute: 1136 MiB | Free: 1363 MiB
+
+CUDA1 (RTX 3090): 24575 MiB total
+  Model: 19940 MiB | KV Cache: 273 MiB | Compute: 1136 MiB | Free: 1898 MiB</code></pre>
+
+<p>The KV cache at 8K context is only <strong>560 MiB</strong> &mdash; a fraction of the 40 GiB model. KV cache is no longer the memory bottleneck.</p>
+
+<h3>7.4 Context Scaling: Phase 2 vs Phase 3</h3>
+
+<p><strong>Phase 2 (non-flash attention, $O(n^2)$ compute):</strong></p>
+
+<table>
+<tr><th>Context</th><th>KV Cache</th><th>Compute Buffers</th><th>Status</th></tr>
+<tr><td>2,048</td><td>140 MiB</td><td>~1.7 GB/GPU</td><td>Works</td></tr>
+<tr><td>8,192</td><td>560 MiB</td><td>~1.1 GB/GPU</td><td>Works</td></tr>
+<tr><td>16,384</td><td>1,120 MiB</td><td>~2.3 GB/GPU</td><td>Works</td></tr>
+<tr style="background:#fdd;"><td>20,480</td><td>1,400 MiB</td><td>~16 GB/GPU</td><td><strong>OOM</strong></td></tr>
+</table>
+
+<p><strong>Phase 3 (flash attention, $O(n)$ compute):</strong></p>
+
+<table>
+<tr><th>Context</th><th>KV Cache</th><th>Compute Buffers</th><th>Status</th></tr>
+<tr><td>2,048</td><td>140 MiB</td><td>~2.9 GB/GPU</td><td>Works</td></tr>
+<tr><td>32,768</td><td>2,240 MiB</td><td>384 MiB/GPU</td><td>Works</td></tr>
+<tr><td>73,728</td><td>5,040 MiB</td><td>784 MiB/GPU</td><td>Works</td></tr>
+<tr class="highlight"><td>81,920</td><td>5,600 MiB</td><td>864 MiB/GPU</td><td>Works (0 MiB free)</td></tr>
+</table>
+
+<p>Phase 2 hit a wall at 20K because without flash attention, the full $n \times n$ attention weight matrix must be materialized &mdash; $O(n^2)$ memory regardless of KV cache savings. Phase 3's graph-side dequantization enables flash attention, which tiles the computation internally. Compute buffers become roughly constant (~400&ndash;900 MiB/GPU), and context length is limited only by KV cache VRAM.</p>
+
+<hr>
+
+<h2><span class="section-num">8.</span> Analysis and Discussion</h2>
+
+<h3>8.1 Why Query-Side WHT Matters</h3>
+
+<p>Our first implementation (in our own llama.cpp fork) applied WHT as graph-side operations &mdash; dedicated GGML ops that rotate queries before attention. This worked on single GPU but catastrophically failed on multi-GPU:</p>
+
+<ul>
+<li>The WHT ops created compute buffers proportional to the full query tensor across all heads</li>
+<li>On 2&times; RTX 3090 with Llama 70B, this resulted in 21&ndash;42 GB compute buffer requests on a single device</li>
+<li>Pipeline parallelism produced 83&ndash;163 graph splits, with the WHT ops becoming bottleneck transfer points</li>
+</ul>
+
+<p>unixsysdev's innovation was applying WHT <strong>inside the MMVQ dot-product kernel</strong> (<code>vec_dot_tq3_0_q8_1</code>). The query's int8 values are rotated in-register using integer arithmetic &mdash; no additional memory allocation, no graph splits, and the computation is fused with the dot product itself:</p>
+
+<pre><code><span class="comment">// In-register WHT on int8 query values (no memory allocation)</span>
+int32_t sq[32];
+for (int j = 0; j < 32; j++)
+    sq[j] = (int32_t)bq8_1[0].qs[j] * signs[j];  <span class="comment">// D1 sign flip</span>
+for (int step = 1; step < 32; step <<= 1)           <span class="comment">// butterfly</span>
+    for (int i = 0; i < 32; i += step * 2)
+        for (int j = i; j < i + step; j++) {
+            int32_t a = sq[j], b = sq[j + step];
+            sq[j] = a + b; sq[j + step] = a - b;
+        }</code></pre>
+
+<p>This architectural decision is what makes TurboQuant viable on consumer multi-GPU setups.</p>
+
+<h3>8.2 Theoretical vs Practical Distortion</h3>
+
+<p>The paper proves that 3-bit PolarQuant achieves MSE distortion $D_{\text{mse}} \leq 0.03$ per coordinate (vs information-theoretic lower bound of 0.0156 &mdash; within 2&times;). Our WikiText-2 perplexity measurements (Section 7.2) provide empirical characterization of this distortion in practice: K-only compression shows minimal degradation, while full K+V compression introduces a measurable but moderate quality tradeoff &mdash; comparable in magnitude to the degradation from Q4_K_M weight quantization itself.</p>
+
+<h3>8.3 Speed&ndash;Context Trade-off</h3>
+
+<p>The three phases offer different trade-offs:</p>
+
+<table>
+<tr><th>Phase</th><th>Attention Path</th><th>Gen Speed</th><th>Max Context</th><th>Best For</th></tr>
+<tr><td>Phase 1 (K-only)</td><td>MMVQ (fused WHT)</td><td>15.9 t/s</td><td>~24K</td><td>Speed-critical, moderate context</td></tr>
+<tr><td>Phase 2 (K+V, non-flash)</td><td>MMVQ + V dequant</td><td>9.0 t/s</td><td>~16K</td><td>Maximum compression, short context</td></tr>
+<tr class="highlight"><td>Phase 3 (K+V, flash)</td><td>K+V dequant &rarr; FA</td><td>5.1 t/s</td><td>~80K</td><td>Long context (&gt;16K)</td></tr>
+</table>
+
+<p>Phase 3's speed reduction (9.0 &rarr; 5.1 t/s) comes from dequanting both K and V per-layer (Phase 2 only dequants V, using the fused MMVQ kernel for K). Future work could recover some of this by implementing a flash attention variant that reads tq3_0 K directly with in-kernel WHT, eliminating the K dequant step.</p>
+
+<hr>
+
+<h2><span class="section-num">9.</span> Future Work</h2>
+
+<h3>9.1 Fused Flash Attention with WHT</h3>
+
+<p>The current Phase 3 approach dequants tq3_0 &rarr; F32 &rarr; F16 before feeding into flash attention. A fused kernel that reads tq3_0 K directly with in-kernel WHT would eliminate the K dequant step, potentially recovering the speed gap between Phase 2 (9.0 t/s) and Phase 3 (5.1 t/s) while keeping flash attention's memory benefits. This requires deep modifications to the flash attention CUDA kernel.</p>
+
+<h3>9.2 QJL Residual Correction (Stage 2)</h3>
+
+<p>The current implementation uses only Stage 1 (PolarQuant). Adding TurboQuant's Stage 2 &mdash; the Quantized Johnson-Lindenstrauss residual correction &mdash; could further reduce quantization error at the cost of additional storage bits. The paper shows this provides measurable improvement at higher compression ratios.</p>
+
+<h3>9.3 Adaptive Phase Selection</h3>
+
+<p>An automatic mode that selects Phase 2 (non-flash, faster) for context &le; 16K and Phase 3 (flash, longer) for context &gt; 16K would give users the best of both worlds without manual configuration.</p>
+
+<hr>
+
+<h2><span class="section-num">10.</span> Summary of Code Changes</h2>
+
+<p>All changes are in the llama-turboquant repository, relative to tag <code>tq3_0-v1-fixed</code>.</p>
+
+<h3>Phase 1 (K Cache &mdash; 3-Bit Upgrade)</h3>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>ggml/src/ggml-cuda/vecdotq.cuh</code></td><td>8 centroids, 3-bit extraction, <code>1/&radic;32</code> norm</td></tr>
+<tr><td><code>ggml/src/ggml-cuda/cpy-utils.cuh</code></td><td>8 centroids, 7-boundary quantization, 3-bit packing</td></tr>
+<tr><td><code>ggml/src/ggml-cuda/convert.cu</code></td><td>8 centroids, 3-bit dequantization</td></tr>
+<tr><td><code>ggml/src/ggml-quants.c</code></td><td>CPU reference: 8 centroids, 3-bit pack/unpack</td></tr>
+</table>
+
+<h3>Phase 2 (V Cache &mdash; Full Compression)</h3>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>src/llama-model.cpp</code></td><td><code>v_trans = false</code> when V type is quantized (4 sites)</td></tr>
+<tr><td><code>src/llama-context.cpp</code></td><td>Allow tq3_0 V without flash_attn (2 guard bypasses)</td></tr>
+<tr><td><code>src/llama-graph.cpp</code></td><td>V dequant (<code>ggml_cast &rarr; F32</code>) + transpose in attention</td></tr>
+</table>
+
+<h3>Phase 3 (Flash Attention &mdash; Long Context)</h3>
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>src/llama-context.cpp</code></td><td>Remove flash_attn force-off for tq3_0 K (warn instead)</td></tr>
+<tr><td><code>src/llama-graph.cpp</code></td><td>Add tq3_0 &rarr; F32 dequant in flash attention path (K and V)</td></tr>
+</table>
+
+<hr>
+
+<h2><span class="section-num">11.</span> Reproduction</h2>
+
+<pre><code><span class="comment"># Clone and build</span>
+git clone https://github.com/animehacker/llama-turboquant
+cd llama-turboquant
+cmake -B build-cuda -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86
+cmake --build build-cuda --config Release -j$(nproc)
+
+<span class="comment"># Test K-only (Phase 1)</span>
+./build-cuda/bin/llama-completion \
+  -m Llama-3.3-70B-Instruct-Q4_K_M.gguf \
+  -ngl 99 -c 8192 -n 128 --temp 0 -ctk tq3_0 \
+  -p "What is gravity?"
+
+<span class="comment"># Test K+V short context (Phase 2 &mdash; non-flash, faster)</span>
+./build-cuda/bin/llama-completion \
+  -m Llama-3.3-70B-Instruct-Q4_K_M.gguf \
+  -ngl 99 -c 8192 -n 128 --temp 0 -ctk tq3_0 -ctv tq3_0 -fa 0 \
+  -p "What is gravity?"
+
+<span class="comment"># Test K+V long context (Phase 3 &mdash; flash attention, 72K)</span>
+./build-cuda/bin/llama-completion \
+  -m Llama-3.3-70B-Instruct-Q4_K_M.gguf \
+  -ngl 99 -c 73728 -n 128 --temp 0 -ctk tq3_0 -ctv tq3_0 \
+  -p "What is gravity?"
+
+<span class="comment"># Perplexity benchmark (WikiText-2)</span>
+wget https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
+unzip wikitext-2-raw-v1.zip
+./build-cuda/bin/llama-perplexity \
+  -m Llama-3.3-70B-Instruct-Q4_K_M.gguf \
+  -ngl 99 -f wikitext-2-raw/wiki.test.raw \
+  -ctk tq3_0 -ctv tq3_0</code></pre>
+
+<hr>
+
+<h2><span class="section-num">12.</span> Conclusion</h2>
+
+<p>I have demonstrated that Google's TurboQuant algorithm can be practically implemented in llama.cpp's GGML framework, achieving the paper's claimed 4.57&times; KV cache compression with 72K+ context on a real 70B parameter model across consumer GPUs. The implementation required three phases of engineering &mdash; each solving distinct challenges of the GGML/CUDA stack:</p>
+
+<ol>
+<li><strong>Phase 1</strong> fixed a normalization bug and upgraded to 3-bit quantization, establishing functional K cache compression</li>
+<li><strong>Phase 2</strong> solved the V cache transpose incompatibility and cross-backend dequantization limitation, achieving full 4.57&times; compression</li>
+<li><strong>Phase 3</strong> re-enabled flash attention via graph-side dequantization, breaking through the $O(n^2)$ attention memory wall</li>
+</ol>
+
+<p>The KV cache compresses to 3.5 bits per value (4.57&times;) with a characterized quality tradeoff &mdash; K-only compression is near-transparent, while full K+V introduces moderate perplexity degradation comparable to weight quantization. More significantly, the graph-side dequantization strategy unlocks context lengths (72K+) that would be impossible even with uncompressed f16 KV cache on the same hardware. A Llama-3.3-70B model with 72K context on dual consumer RTX 3090 GPUs &mdash; using only 5 GiB of KV cache where f16 would require 23 GiB &mdash; demonstrates that KV cache compression is not merely a memory optimization but a qualitative capability expansion. The right framing is not &ldquo;lossless compression&rdquo; but rather a configurable compression&ndash;quality&ndash;context tradeoff that the user can tune to their needs.</p>
+
+<hr>
+
+<h2>Acknowledgments</h2>
+<ul>
+<li><strong>TurboQuant paper authors</strong> (Zirlin, Goncharov, Makarova, Sushma, Kropotov, Vetrov) for the algorithm and theoretical foundations</li>
+<li><strong>unixsysdev</strong> for the initial llama.cpp tq3_0 implementation with query-side WHT architecture</li>
+<li><strong>llama.cpp community</strong> for the GGML framework</li>
+</ul>
+
+<h2>References</h2>
+<ol>
+<li>Zirlin, P., Goncharov, A., Makarova, D., Sushma, S., Kropotov, D., &amp; Vetrov, D. (2026). TurboQuant: Online KV Cache Quantization with Theoretical Guarantees. <em>ICLR 2026</em>. arXiv:2504.19874.</li>
+<li>Llama.cpp. <a href="https://github.com/ggml-org/llama.cpp">https://github.com/ggml-org/llama.cpp</a></li>
+<li>Ailon, N., &amp; Chazelle, B. (2009). The fast Johnson&ndash;Lindenstrauss transform and approximate nearest neighbors. <em>SIAM Journal on Computing</em>, 39(1), 302-322.</li>
+<li>Dao, T., Fu, D. Y., Ermon, S., Rudra, A., &amp; R&eacute;, C. (2022). FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness. <em>NeurIPS 2022</em>. arXiv:2205.14135.</li>
+<li>unixsysdev. llama.cpp TQ3_0 implementation. <a href="https://github.com/unixsysdev/llama.cpp">https://github.com/unixsysdev/llama.cpp</a></li>
+</ol>
+
+</body>
+</html>
