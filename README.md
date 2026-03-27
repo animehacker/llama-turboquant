@@ -7,7 +7,7 @@
 
 This fork builds on [unixsysdev’s tq3_0 implementation](https://github.com/unixsysdev/llama-turboquant), which provided the foundational CUDA MMVQ kernel with query-side WHT and the 14-byte block layout for [llama.cpp](https://github.com/ggml-org/llama.cpp). His implementation achieved ~2.4x K-cache compression using Google Research’s [TurboQuant](https://arxiv.org/abs/2504.19874) pipeline (ICLR 2026).
 
-We extended his work with:
+I extended his work with:
 - **Normalization fix** — corrected `1/32` → `1/√32` WHT normalization, eliminating quality degradation
 - **V cache compression** — added tq3_0 support for V cache (non-transposed storage + graph-side dequant), achieving **4.57x total KV compression**
 - **Flash attention integration** — graph-side dequantization enables flash attention with tq3_0, extending max context from ~16K to **72K+**
@@ -36,7 +36,7 @@ Each block of 32 values is stored as:
 
 The key insight from TurboQuant: a random orthogonal rotation makes **any** input distribution approximately Gaussian (by the Central Limit Theorem). Once Gaussianized, a fixed 4-level codebook quantizer achieves near-optimal MSE without any data-dependent calibration.
 
-We use a per-block **Walsh-Hadamard Transform (WHT32)** as the rotation:
+I use a per-block **Walsh-Hadamard Transform (WHT32)** as the rotation:
 - **Deterministic** — No stored state, no random seeds, perfectly reproducible
 - **Self-inverse** — The same transform is used for both encoding and decoding
 - **O(n log n)** — Only 160 add/subtract ops for 32 values (5 butterfly stages)
