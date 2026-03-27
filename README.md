@@ -275,7 +275,7 @@ Inverse (dequantize):
 
 ### Design Decisions
 
-1. **Per-block WHT (not full-d rotation)** — The paper uses a d×d random orthogonal matrix. We approximate this with a per-block 32×32 Walsh-Hadamard Transform. This avoids modifying the attention computation graph while still achieving good quality (+5.8% PPL). A full head_dim rotation would require graph-level query rotation.
+1. **Per-block WHT (not full-d rotation)** — The paper uses a d×d random orthogonal matrix. I approximate this with a per-block 32×32 Walsh-Hadamard Transform. This avoids modifying the attention computation graph while still achieving good quality (+5.8% PPL). A full head_dim rotation would require graph-level query rotation.
 
 2. **Fused MMVQ with WHT on query** — Since WHT is orthogonal, `dot(q, k) = dot(WHT(q), WHT(k))`. Rather than dequantizing K back to original space, we apply WHT to the Q8_1 query values inside the fused `vec_dot_tq3_0_q8_1` kernel (int32 butterfly transform), then compute the dot product directly in rotated space. This avoids the dequant+MUL_MAT path, achieving speed parity with Q4_0.
 
