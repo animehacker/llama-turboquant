@@ -83,6 +83,72 @@ static void dequantize_row_q2_K_sycl(const void *vx, dst_t *y, const int64_t k,
 #endif
 }
 
+// TurboQuant TQ3_0: 3-bit codebook dequant + inverse WHT32 (cooperative)
+// Ported from ggml-cuda/convert.cu dequantize_block_tq3_0. Each work-group
+// handles one 32-value block; each work-item handles one value.
+template <typename dst_t>
+static void dequantize_block_tq3_0_sycl_kernel(const void * __restrict__ vx,
+                                               dst_t * __restrict__ yy,
+                                               const sycl::nd_item<3> &item_ct1,
+                                               float * shmem) {
+    const float centroids[8] = {
+        -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+         0.2428f,  0.7434f,  1.3336f,  2.1573f
+    };
+    const int8_t signs[32] = {
+        +1, -1, +1, +1, -1, -1, +1, -1, +1, +1, -1, +1, -1, +1, -1, -1,
+        +1, -1, -1, +1, +1, -1, +1, -1, -1, +1, +1, +1, -1, -1, +1, -1
+    };
+
+    const int64_t i = item_ct1.get_group(2);
+    const int tid   = item_ct1.get_local_id(2);
+    if (tid >= 32) return;
+
+    const block_tq3_0 * x = (const block_tq3_0 *) vx;
+    const float d = sycl::vec<sycl::half, 1>{x[i].gamma}
+                        .convert<float, sycl::rounding_mode::automatic>()[0];
+
+    const int low2 = (x[i].qs[tid / 4] >> (2 * (tid % 4))) & 3;
+    const int hi1  = (x[i].qr[tid / 8] >> (tid % 8)) & 1;
+    const int idx  = low2 | (hi1 << 2);
+
+    shmem[tid] = d * centroids[idx];
+    item_ct1.barrier(sycl::access::fence_space::local_space);
+
+    // Cooperative inverse WHT32: 5 butterfly stages
+    for (int step = 1; step < 32; step <<= 1) {
+        const int partner = tid ^ step;
+        const float a = shmem[tid];
+        const float b = shmem[partner];
+        item_ct1.barrier(sycl::access::fence_space::local_space);
+        if (tid < partner) {
+            shmem[tid]     = a + b;
+            shmem[partner] = a - b;
+        }
+        item_ct1.barrier(sycl::access::fence_space::local_space);
+    }
+
+    const float inv_sqrt32 = 0.17677669529663688f;
+    yy[i * QK_TQ3_0 + tid] = (dst_t)(shmem[tid] * inv_sqrt32 * (float)signs[tid]);
+}
+
+template <typename dst_t>
+static void dequantize_row_tq3_0_sycl(const void *vx, dst_t *y, const int64_t k,
+                                      dpct::queue_ptr stream) {
+    const int64_t nb = k / QK_TQ3_0;
+    stream->submit([&](sycl::handler & cgh) {
+        sycl::local_accessor<float, 1> shmem_acc(sycl::range<1>(32), cgh);
+        cgh.parallel_for(
+            sycl::nd_range<3>(sycl::range<3>(1, 1, nb) * sycl::range<3>(1, 1, 32),
+                              sycl::range<3>(1, 1, 32)),
+            [=](sycl::nd_item<3> item_ct1) {
+                dequantize_block_tq3_0_sycl_kernel<dst_t>(
+                    vx, y, item_ct1,
+                    shmem_acc.get_multi_ptr<sycl::access::decorated::no>().get());
+            });
+    });
+}
+
 template <typename dst_t>
 static void dequantize_row_q3_K_sycl(const void *vx, dst_t *y, const int64_t k,
                                      dpct::queue_ptr stream) {
@@ -603,6 +669,8 @@ to_fp16_sycl_t ggml_get_to_fp16_sycl(ggml_type type, ggml_tensor * dst) {
             return dequantize_block_sycl<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_sycl<QK8_0, QR8_0, dequantize_q8_0>;
+        case GGML_TYPE_TQ3_0:
+            return dequantize_row_tq3_0_sycl;
         case GGML_TYPE_Q2_K:
             return dequantize_row_q2_K_sycl;
         case GGML_TYPE_Q3_K:
@@ -669,6 +737,8 @@ to_fp32_sycl_t ggml_get_to_fp32_sycl(ggml_type type, ggml_tensor *dst) {
             return dequantize_block_sycl<QK5_1, QR5_1, dequantize_q5_1>;
         case GGML_TYPE_Q8_0:
             return dequantize_block_sycl<QK8_0, QR8_0, dequantize_q8_0>;
+        case GGML_TYPE_TQ3_0:
+            return dequantize_row_tq3_0_sycl;
         case GGML_TYPE_Q2_K:
             return dequantize_row_q2_K_sycl;
         case GGML_TYPE_Q3_K:
