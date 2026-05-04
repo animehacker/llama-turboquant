@@ -372,6 +372,61 @@ static void ggml_cpy_f32_iq4_nl_cuda(
         (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
 }
 
+// TQ3_0 -> F32: single-thread dequant (inverse WHT) for CPY path
+static __device__ void cpy_blck_tq3_0_f32(const char * cxi, char * cdsti) {
+    const float centroids[8] = {
+        -2.1573f, -1.3336f, -0.7434f, -0.2428f,
+         0.2428f,  0.7434f,  1.3336f,  2.1573f
+    };
+
+    const block_tq3_0 * x = (const block_tq3_0 *)cxi;
+    float * dst = (float *)cdsti;
+
+    const float d = __half2float(x->gamma);
+
+    // Step 1: dequant 3-bit indices to centroid values
+    float tmp[QK_TQ3_0];
+    for (int j = 0; j < QK_TQ3_0; j++) {
+        const int low2 = (x->qs[j / 4] >> (2 * (j % 4))) & 3;
+        const int hi1  = (x->qr[j / 8] >> (j % 8)) & 1;
+        const int idx  = low2 | (hi1 << 2);
+        tmp[j] = d * centroids[idx];
+    }
+
+    // Step 2: inverse WHT + sign normalization (reuse existing helper)
+    tq3_wht32_inverse_device(tmp);
+
+    for (int j = 0; j < QK_TQ3_0; j++) {
+        dst[j] = tmp[j];
+    }
+}
+
+static void ggml_cpy_tq3_0_f32_cuda(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02,
+    const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12,
+    const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13,
+    cudaStream_t stream) {
+    const int64_t num_blocks = ne;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_q_f32<cpy_blck_tq3_0_f32, QK_TQ3_0><<<num_blocks, 1, 0, stream>>>(
+        cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03,
+        ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
+static void ggml_cpy_f32_tq3_0_cuda(
+    const char * cx, char * cdst, const int64_t ne,
+    const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t nb00, const int64_t nb01, const int64_t nb02,
+    const int64_t nb03, const int64_t ne10, const int64_t ne11, const int64_t ne12, const int64_t nb10, const int64_t nb11, const int64_t nb12, const int64_t nb13, cudaStream_t stream) {
+
+    GGML_ASSERT(ne % QK_TQ3_0 == 0);
+    const int64_t num_blocks = ne / QK_TQ3_0;
+    GGML_ASSERT(num_blocks < UINT_MAX);
+    cpy_f32_q<cpy_blck_f32_tq3_0, QK_TQ3_0><<<num_blocks, 1, 0, stream>>>
+        (cx, cdst, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13);
+}
+
 void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, ggml_tensor * src1) {
     const int64_t ne = ggml_nelements(src0);
     GGML_ASSERT(ne == ggml_nelements(src1));
@@ -473,6 +528,12 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_Q5_1 && src1->type == GGML_TYPE_F32) {
         ggml_cpy_q5_1_f32_cuda
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_F32 && src1->type == GGML_TYPE_TQ3_0) {
+        ggml_cpy_f32_tq3_0_cuda
+                (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
+    } else if (src0->type == GGML_TYPE_TQ3_0 && src1->type == GGML_TYPE_F32) {
+        ggml_cpy_tq3_0_f32_cuda
                 (src0_ddc, src1_ddc, ne, ne00, ne01, ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb13, main_stream);
     } else if (src0->type == GGML_TYPE_F16 && src1->type == GGML_TYPE_F16) {
         if (can_be_transposed) {
